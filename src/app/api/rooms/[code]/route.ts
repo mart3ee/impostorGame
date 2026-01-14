@@ -4,6 +4,7 @@ import { redis } from "@/lib/redis";
 type Player = {
   id: string;
   name: string;
+  avatar: string;
 };
 
 type RoomState = "lobby" | "in_progress" | "reveal";
@@ -26,6 +27,7 @@ type Room = {
 type RoomViewPlayer = {
   id: string;
   name: string;
+  avatar: string;
 };
 
 type RoomView = {
@@ -36,6 +38,7 @@ type RoomView = {
   you: {
     id: string;
     name: string;
+    avatar: string;
     isImpostor: boolean;
     secretWord: string | null;
   };
@@ -88,6 +91,7 @@ function toView(room: Room, playerId: string): RoomView {
   const players: RoomViewPlayer[] = room.players.map((p) => ({
     id: p.id,
     name: p.name,
+    avatar: p.avatar,
   }));
 
   const view: RoomView = {
@@ -98,6 +102,7 @@ function toView(room: Room, playerId: string): RoomView {
     you: {
       id: player.id,
       name: player.name,
+      avatar: player.avatar,
       isImpostor,
       secretWord: isImpostor ? null : room.secretWord,
     },
@@ -106,7 +111,7 @@ function toView(room: Room, playerId: string): RoomView {
   if (room.state === "reveal" && room.secretWord) {
     const impostors = room.players
       .filter((p) => room.impostorIds.includes(p.id))
-      .map((p) => ({ id: p.id, name: p.name }));
+      .map((p) => ({ id: p.id, name: p.name, avatar: p.avatar }));
 
     view.reveal = {
       word: room.secretWord,
@@ -315,10 +320,11 @@ export async function POST(
     return new Response("JSON inválido.", { status: 400 });
   }
 
-  const { action, playerId, playerName, numImpostors, targetPlayerId } = body as {
+  const { action, playerId, playerName, playerAvatar, numImpostors, targetPlayerId } = body as {
     action?: Action;
     playerId?: string;
     playerName?: string;
+    playerAvatar?: string;
     numImpostors?: number;
     targetPlayerId?: string;
   };
@@ -340,11 +346,14 @@ export async function POST(
         return new Response("Nome do jogador é obrigatório.", { status: 400 });
       }
 
+      const avatar = (playerAvatar ?? "😀").trim() || "😀";
+
       const existingIndex = room.players.findIndex((p) => p.id === playerId);
       if (existingIndex >= 0) {
         room.players[existingIndex].name = trimmedName;
+        room.players[existingIndex].avatar = avatar;
       } else {
-        room.players.push({ id: playerId, name: trimmedName });
+        room.players.push({ id: playerId, name: trimmedName, avatar });
       }
 
       await saveRoom(room);

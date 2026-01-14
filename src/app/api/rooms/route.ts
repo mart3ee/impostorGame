@@ -4,6 +4,7 @@ import { redis } from "@/lib/redis";
 type Player = {
   id: string;
   name: string;
+  avatar: string;
 };
 
 type RoomState = "lobby" | "in_progress" | "reveal";
@@ -26,6 +27,7 @@ type Room = {
 type RoomViewPlayer = {
   id: string;
   name: string;
+  avatar: string;
 };
 
 type RoomView = {
@@ -36,6 +38,7 @@ type RoomView = {
   you: {
     id: string;
     name: string;
+    avatar: string;
     isImpostor: boolean;
     secretWord: string | null;
   };
@@ -84,6 +87,7 @@ function toView(room: Room, playerId: string): RoomView {
   const players = room.players.map((p) => ({
     id: p.id,
     name: p.name,
+    avatar: p.avatar,
   }));
 
   const view: RoomView = {
@@ -94,6 +98,7 @@ function toView(room: Room, playerId: string): RoomView {
     you: {
       id: player.id,
       name: player.name,
+      avatar: player.avatar,
       isImpostor,
       secretWord: isImpostor ? null : room.secretWord,
     },
@@ -102,7 +107,7 @@ function toView(room: Room, playerId: string): RoomView {
   if (room.state === "reveal" && room.secretWord) {
     const impostors = room.players
       .filter((p) => room.impostorIds.includes(p.id))
-      .map((p) => ({ id: p.id, name: p.name }));
+      .map((p) => ({ id: p.id, name: p.name, avatar: p.avatar }));
 
     view.reveal = {
       word: room.secretWord,
@@ -129,9 +134,10 @@ export async function POST(request: NextRequest) {
     return new Response("JSON inválido.", { status: 400 });
   }
 
-  const { playerId, playerName } = body as {
+  const { playerId, playerName, playerAvatar } = body as {
     playerId?: string;
     playerName?: string;
+    playerAvatar?: string;
   };
 
   if (!playerId || typeof playerId !== "string") {
@@ -145,6 +151,8 @@ export async function POST(request: NextRequest) {
     return new Response("Nome do jogador é obrigatório.", { status: 400 });
   }
 
+  const avatar = (playerAvatar ?? "😀").trim() || "😀";
+
   const code = await createUniqueRoomCode();
 
   const room: Room = {
@@ -154,6 +162,7 @@ export async function POST(request: NextRequest) {
       {
         id: playerId,
         name: trimmedName,
+        avatar,
       },
     ],
     state: "lobby",

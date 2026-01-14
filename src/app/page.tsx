@@ -13,6 +13,7 @@ type RoomSettings = {
 type RoomViewPlayer = {
   id: string;
   name: string;
+  avatar: string;
 };
 
 type RoomView = {
@@ -23,6 +24,7 @@ type RoomView = {
   you: {
     id: string;
     name: string;
+    avatar: string;
     isImpostor: boolean;
     secretWord: string | null;
   };
@@ -34,8 +36,11 @@ type RoomView = {
 
 const PLAYER_ID_KEY = "impostor-player-id";
 const PLAYER_NAME_KEY = "impostor-player-name";
+const PLAYER_AVATAR_KEY = "impostor-player-avatar";
 const ROOM_CODE_KEY = "impostor-room-code";
 const IS_HOST_KEY = "impostor-is-host";
+
+const AVATARS = ["😀", "😎", "🤠", "🥳", "🤖", "👻", "👽", "🐶", "🐱", "🐵", "🦊", "🐼"];
 
 function createLocalPlayerId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -46,13 +51,13 @@ function createLocalPlayerId() {
   return `${time}-${random}`;
 }
 
-async function createRoom(playerId: string, playerName: string) {
+async function createRoom(playerId: string, playerName: string, playerAvatar: string) {
   const response = await fetch("/api/rooms", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ playerId, playerName }),
+    body: JSON.stringify({ playerId, playerName, playerAvatar }),
   });
 
   if (!response.ok) {
@@ -70,6 +75,7 @@ async function joinRoom(
   code: string,
   playerId: string,
   playerName: string,
+  playerAvatar: string,
 ): Promise<RoomView> {
   const response = await fetch(`/api/rooms/${code}`, {
     method: "POST",
@@ -80,6 +86,7 @@ async function joinRoom(
       action: "join",
       playerId,
       playerName,
+      playerAvatar,
     }),
   });
 
@@ -148,6 +155,7 @@ function normalizeRoomCode(code: string) {
 export default function Home() {
   const [playerId, setPlayerId] = useState<string | null>(null);
   const [playerName, setPlayerName] = useState("");
+  const [playerAvatar, setPlayerAvatar] = useState(AVATARS[0]);
   const [roomCode, setRoomCode] = useState<string | null>(null);
   const [roomView, setRoomView] = useState<RoomView | null>(null);
   const [isHost, setIsHost] = useState(false);
@@ -175,6 +183,14 @@ export default function Home() {
       setPlayerName(storedName);
     }
 
+    const storedAvatar = localStorage.getItem(PLAYER_AVATAR_KEY);
+    if (storedAvatar && AVATARS.includes(storedAvatar)) {
+      setPlayerAvatar(storedAvatar);
+    } else {
+      const randomAvatar = AVATARS[Math.floor(Math.random() * AVATARS.length)];
+      setPlayerAvatar(randomAvatar);
+    }
+
     const storedRoom = localStorage.getItem(ROOM_CODE_KEY);
     const storedIsHost = localStorage.getItem(IS_HOST_KEY);
 
@@ -196,6 +212,13 @@ export default function Home() {
     }
     localStorage.setItem(PLAYER_NAME_KEY, playerName);
   }, [playerName]);
+
+  useEffect(() => {
+    if (!playerAvatar || typeof window === "undefined") {
+      return;
+    }
+    localStorage.setItem(PLAYER_AVATAR_KEY, playerAvatar);
+  }, [playerAvatar]);
 
   useEffect(() => {
     if (!roomCode || !playerId) {
@@ -323,7 +346,7 @@ export default function Home() {
     setError(null);
 
     try {
-      const result = await createRoom(playerId, trimmedName);
+      const result = await createRoom(playerId, trimmedName, playerAvatar);
       setRoomCode(result.roomCode);
       setRoomView(result.view);
       setIsHost(true);
@@ -363,7 +386,7 @@ export default function Home() {
     setError(null);
 
     try {
-      const view = await joinRoom(code, playerId, trimmedName);
+      const view = await joinRoom(code, playerId, trimmedName, playerAvatar);
       setRoomCode(code);
       setRoomView(view);
       setIsHost(false);
@@ -576,6 +599,22 @@ export default function Home() {
                 />
               </div>
 
+              <div className={styles.field}>
+                <label className={styles.label}>Avatar</label>
+                <div className={styles.avatarGrid}>
+                  {AVATARS.map((av) => (
+                    <button
+                      key={av}
+                      type="button"
+                      className={`${styles.avatarOption} ${playerAvatar === av ? styles.avatarSelected : ""}`}
+                      onClick={() => setPlayerAvatar(av)}
+                    >
+                      {av}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className={styles.buttonsColumn}>
                 <button
                   className={styles.primaryButton}
@@ -629,7 +668,12 @@ export default function Home() {
               <div className={styles.field}>
                 <label className={styles.label}>Você</label>
                 <div className={styles.youRow}>
-                  <span className={styles.youName}>{roomView.you.name}</span>
+                  <div className={styles.playerInfo}>
+                    <span className={styles.playerAvatar}>
+                      {roomView.you.avatar || "😀"}
+                    </span>
+                    <span className={styles.youName}>{roomView.you.name}</span>
+                  </div>
                   {roomView.you.isImpostor && (
                     <span className={styles.youRole}>Impostor</span>
                   )}
@@ -685,9 +729,14 @@ export default function Home() {
 
                     return (
                       <li key={player.id} className={styles.playerItem}>
-                        <span className={styles.playerName}>
-                          {player.name}
-                        </span>
+                        <div className={styles.playerInfo}>
+                          <span className={styles.playerAvatar}>
+                            {player.avatar || "😀"}
+                          </span>
+                          <span className={styles.playerName}>
+                            {player.name}
+                          </span>
+                        </div>
                         {canKick && (
                           <button
                             type="button"
