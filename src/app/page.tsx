@@ -237,18 +237,25 @@ export default function Home() {
         }
       } catch (error) {
         const roomError = error as RoomError;
-        if (typeof window !== "undefined") {
-          localStorage.removeItem(ROOM_CODE_KEY);
-          localStorage.removeItem(IS_HOST_KEY);
-        }
-        setRoomCode(null);
-        setRoomView(null);
-        setIsHost(false);
         if (roomError.status === 403) {
+          if (typeof window !== "undefined") {
+            localStorage.removeItem(ROOM_CODE_KEY);
+            localStorage.removeItem(IS_HOST_KEY);
+          }
+          setRoomCode(null);
+          setRoomView(null);
+          setIsHost(false);
           setError("Você foi removido da sala.");
           return;
         }
         if (roomError.status === 404) {
+          if (typeof window !== "undefined") {
+            localStorage.removeItem(ROOM_CODE_KEY);
+            localStorage.removeItem(IS_HOST_KEY);
+          }
+          setRoomCode(null);
+          setRoomView(null);
+          setIsHost(false);
           setError("A sala não está mais disponível.");
           return;
         }
@@ -288,23 +295,35 @@ export default function Home() {
           return;
         }
         const roomError = error as RoomError;
-        if (typeof window !== "undefined") {
-          localStorage.removeItem(ROOM_CODE_KEY);
-          localStorage.removeItem(IS_HOST_KEY);
-        }
-        setRoomCode(null);
-        setRoomView(null);
-        setIsHost(false);
         if (roomError.status === 403) {
+          if (typeof window !== "undefined") {
+            localStorage.removeItem(ROOM_CODE_KEY);
+            localStorage.removeItem(IS_HOST_KEY);
+          }
+          setRoomCode(null);
+          setRoomView(null);
+          setIsHost(false);
           setError("Você foi removido da sala.");
           cancelled = true;
           return;
         }
         if (roomError.status === 404) {
+          if (typeof window !== "undefined") {
+            localStorage.removeItem(ROOM_CODE_KEY);
+            localStorage.removeItem(IS_HOST_KEY);
+          }
+          setRoomCode(null);
+          setRoomView(null);
+          setIsHost(false);
           setError("A sala não está mais disponível.");
           cancelled = true;
           return;
         }
+        setError(
+          roomError instanceof Error
+            ? roomError.message
+            : "Não foi possível atualizar a sala.",
+        );
       } finally {
         if (!cancelled) {
           timeoutId = window.setTimeout(poll, 2000);
