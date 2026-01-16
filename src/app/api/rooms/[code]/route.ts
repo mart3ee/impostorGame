@@ -111,12 +111,24 @@ function roomKey(code: string) {
 }
 
 async function getRoomOrError(code: string) {
-  const data = await redis.get<string>(roomKey(code));
-  if (!data) {
-    throw new Response("Sala não encontrada.", { status: 404 });
+  try {
+    const key = roomKey(code);
+    const data = await redis.get<string>(key);
+    if (!data) {
+      throw new Response("Sala não encontrada.", { status: 404 });
+    }
+    const room = JSON.parse(data) as Room;
+    return normalizeRoom(room);
+  } catch (error) {
+    if (error instanceof Response) {
+      throw error;
+    }
+    const message =
+      error instanceof Error && error.message
+        ? error.message
+        : "Erro inesperado ao acessar o armazenamento de salas.";
+    throw new Error(`Falha ao carregar sala ${code} do Redis: ${message}`);
   }
-  const room = JSON.parse(data) as Room;
-  return normalizeRoom(room);
 }
 
 async function saveRoom(room: Room) {
