@@ -277,14 +277,13 @@ function toView(room: Room, playerId: string): RoomView {
 
 async function saveRoom(room: Room) {
   const key = roomKey(room.code);
-  const value = JSON.stringify(room);
 
   try {
-    await redis.set(key, value, {
+    await redis.set(key, room, {
       ex: ROOM_TTL_SECONDS,
     });
 
-    const stored = await redis.get<string>(key);
+    const stored = await redis.get<Room>(key);
     if (!stored) {
       throw new Error("Falha ao verificar sala no Redis após salvar.");
     }

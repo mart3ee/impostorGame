@@ -113,11 +113,10 @@ function roomKey(code: string) {
 async function getRoomOrError(code: string) {
   try {
     const key = roomKey(code);
-    const data = await redis.get<string>(key);
-    if (!data) {
+    const room = await redis.get<Room>(key);
+    if (!room) {
       throw new Response("Sala não encontrada.", { status: 404 });
     }
-    const room = JSON.parse(data) as Room;
     return normalizeRoom(room);
   } catch (error) {
     if (error instanceof Response) {
@@ -133,14 +132,13 @@ async function getRoomOrError(code: string) {
 
 async function saveRoom(room: Room) {
   const key = roomKey(room.code);
-  const value = JSON.stringify(room);
 
   try {
-    await redis.set(key, value, {
+    await redis.set(key, room, {
       ex: ROOM_TTL_SECONDS,
     });
 
-    const stored = await redis.get<string>(key);
+    const stored = await redis.get<Room>(key);
     if (!stored) {
       throw new Error("Falha ao verificar sala no Redis após salvar.");
     }

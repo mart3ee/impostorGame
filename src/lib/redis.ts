@@ -73,7 +73,7 @@ if (hasRedisEnv) {
     new Map<
       string,
       {
-        value: string;
+        value: unknown;
         expiresAt?: number;
       }
     >();
@@ -99,11 +99,9 @@ if (hasRedisEnv) {
         ex?: number;
       },
     ): Promise<unknown> {
-      const stringValue =
-        typeof value === "string" ? value : JSON.stringify(value);
       const expiresAt =
         options?.ex != null ? Date.now() + options.ex * 1000 : undefined;
-      memory.set(key, { value: stringValue, expiresAt });
+      memory.set(key, { value, expiresAt });
       return 1;
     },
     async exists(key: string): Promise<number> {
