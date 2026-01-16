@@ -52,17 +52,20 @@ const isProduction =
   typeof process !== "undefined" &&
   process.env.NODE_ENV === "production";
 
+const isVercel =
+  typeof process !== "undefined" && !!process.env.VERCEL;
+
 if (hasRedisEnv) {
   redisClient = new Redis({
     url: redisUrl,
     token: redisToken,
   }) as unknown as RedisLike;
-} else if (!isProduction) {
+} else if (!isProduction || !isVercel) {
   const globalForRedisMemory = globalThis as unknown as {
     __impostorMemoryStore?: Map<
       string,
       {
-        value: string;
+        value: unknown;
         expiresAt?: number;
       }
     >;
