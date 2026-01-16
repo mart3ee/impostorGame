@@ -620,7 +620,11 @@ export async function GET(
     if (error instanceof Response) {
       return error;
     }
-    return new Response("Erro ao buscar sala.", { status: 500 });
+    const message =
+      error instanceof Error && error.message
+        ? `Erro ao buscar sala: ${error.message}`
+        : "Erro ao buscar sala.";
+    return new Response(message, { status: 500 });
   }
 }
 
@@ -974,6 +978,10 @@ export async function POST(
     if (error instanceof Response) {
       return error;
     }
-    return new Response("Erro ao processar ação na sala.", { status: 500 });
+    const message =
+      error instanceof Error && error.message
+        ? `Erro ao processar ação na sala: ${error.message}`
+        : "Erro ao processar ação na sala.";
+    return new Response(message, { status: 500 });
   }
 }

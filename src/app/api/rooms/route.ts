@@ -339,10 +339,18 @@ export async function POST(request: NextRequest) {
     winner: null,
   };
 
-  await saveRoom(room);
+  try {
+    await saveRoom(room);
 
-  return Response.json({
-    roomCode: room.code,
-    view: toView(room, playerId),
-  });
+    return Response.json({
+      roomCode: room.code,
+      view: toView(room, playerId),
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error && error.message
+        ? `Erro ao criar sala: ${error.message}`
+        : "Erro ao criar sala.";
+    return new Response(message, { status: 500 });
+  }
 }
