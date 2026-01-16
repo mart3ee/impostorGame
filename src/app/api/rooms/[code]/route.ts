@@ -7,11 +7,13 @@ type Player = {
   avatar: string;
 };
 
-type RoomState = "lobby" | "in_progress" | "reveal";
+type RoomState = "lobby" | "in_progress" | "voting" | "reveal";
 
 type RoomSettings = {
   numImpostors: number;
   category: string;
+  maxVotings: number;
+  votingDurationSeconds: number;
 };
 
 type Room = {
@@ -22,12 +24,55 @@ type Room = {
   settings: RoomSettings;
   secretWord: string | null;
   impostorIds: string[];
+  eliminatedPlayerIds: string[];
+  votes: {
+    [playerId: string]: string | "skip";
+  };
+  votingEndsAt: number | null;
+  totalVotings: number;
+  remainingVotings: number;
+  lastVotingResult?: {
+    eliminatedPlayerId: string | null;
+    eliminatedWasImpostor: boolean;
+    isTie: boolean;
+    votesPerPlayer: {
+      [playerId: string]: number;
+    };
+    skipVotes: number;
+  };
+  winner: "crewmates" | "impostors" | null;
 };
 
 type RoomViewPlayer = {
   id: string;
   name: string;
   avatar: string;
+};
+
+type VotingResultEntry = {
+  player: RoomViewPlayer;
+  votes: number;
+};
+
+type VotingView = {
+  state: "idle" | "in_progress" | "results";
+  endsAt: number | null;
+  totalVoters: number;
+  votesSubmitted: number;
+  hasVoted: boolean;
+  canVote: boolean;
+  remainingVotings: number;
+  totalVotings: number;
+  options?: RoomViewPlayer[];
+  result?: {
+    eliminatedPlayer: RoomViewPlayer | null;
+    eliminatedWasImpostor: boolean;
+    isTie: boolean;
+    skipVotes: number;
+    votes: VotingResultEntry[];
+  };
+  gameOver: boolean;
+  winner: "crewmates" | "impostors" | null;
 };
 
 type RoomView = {
@@ -46,6 +91,7 @@ type RoomView = {
     word: string;
     impostors: RoomViewPlayer[];
   };
+  voting?: VotingView;
 };
 
 const ROOM_TTL_SECONDS = 60 * 60 * 6;
@@ -56,7 +102,9 @@ type Action =
   | "reveal"
   | "nextRound"
   | "kick"
-  | "leave";
+  | "leave"
+  | "startVoting"
+  | "vote";
 
 function roomKey(code: string) {
   return `room:${code}`;
@@ -68,7 +116,7 @@ async function getRoomOrError(code: string) {
     throw new Response("Sala não encontrada.", { status: 404 });
   }
   const room = JSON.parse(data) as Room;
-  return room;
+  return normalizeRoom(room);
 }
 
 async function saveRoom(room: Room) {
@@ -79,6 +127,266 @@ async function saveRoom(room: Room) {
 
 async function deleteRoom(code: string) {
   await redis.del(roomKey(code));
+}
+
+function normalizeRoom(room: Room): Room {
+  if (!room.settings) {
+    room.settings = {
+      numImpostors: 1,
+      category: "Conhecimento Geral",
+      maxVotings: 2,
+      votingDurationSeconds: 60,
+    };
+  } else {
+    if (typeof room.settings.maxVotings !== "number") {
+      room.settings.maxVotings = 2;
+    }
+    if (typeof room.settings.votingDurationSeconds !== "number") {
+      room.settings.votingDurationSeconds = 60;
+    }
+  }
+
+  if (!Array.isArray(room.eliminatedPlayerIds)) {
+    room.eliminatedPlayerIds = [];
+  }
+
+  if (!room.votes || typeof room.votes !== "object") {
+    room.votes = {};
+  }
+
+  if (typeof room.votingEndsAt !== "number") {
+    room.votingEndsAt = null;
+  }
+
+  if (typeof room.totalVotings !== "number") {
+    room.totalVotings = room.settings.maxVotings;
+  }
+
+  if (typeof room.remainingVotings !== "number") {
+    room.remainingVotings = room.totalVotings;
+  }
+
+  if (room.winner !== "crewmates" && room.winner !== "impostors") {
+    room.winner = null;
+  }
+
+  return room;
+}
+
+function getActivePlayerIds(room: Room) {
+  return room.players
+    .map((player) => player.id)
+    .filter((id) => !room.eliminatedPlayerIds.includes(id));
+}
+
+function buildVotingView(room: Room, playerId: string): VotingView {
+  const now = Date.now();
+  const activePlayerIds = getActivePlayerIds(room);
+  const totalVoters = activePlayerIds.length;
+  const votesEntries = Object.entries(room.votes);
+  const votesSubmitted = votesEntries.filter(([id]) =>
+    activePlayerIds.includes(id),
+  ).length;
+  const isPlayerActive = activePlayerIds.includes(playerId);
+  const hasVoted = Boolean(room.votes[playerId]);
+  const canVote =
+    room.state === "voting" &&
+    isPlayerActive &&
+    !hasVoted &&
+    room.votingEndsAt != null &&
+    room.votingEndsAt > now;
+
+  let state: VotingView["state"] = "idle";
+  if (room.state === "voting") {
+    state = "in_progress";
+  } else if (room.lastVotingResult) {
+    state = "results";
+  }
+
+  let options: RoomViewPlayer[] | undefined;
+  if (state === "in_progress") {
+    options = room.players
+      .filter(
+        (player) =>
+          !room.eliminatedPlayerIds.includes(player.id) &&
+          player.id !== playerId,
+      )
+      .map((player) => ({
+        id: player.id,
+        name: player.name,
+        avatar: player.avatar,
+      }));
+  }
+
+  const resultVotes: VotingResultEntry[] = [];
+  let eliminatedPlayer: RoomViewPlayer | null = null;
+  let eliminatedWasImpostor = false;
+  let isTie = false;
+  let skipVotes = 0;
+
+  if (room.lastVotingResult) {
+    const lastVotingResult = room.lastVotingResult;
+    const { votesPerPlayer } = lastVotingResult;
+    skipVotes = lastVotingResult.skipVotes;
+    const entries = Object.entries(votesPerPlayer);
+    for (const [targetId, count] of entries) {
+      const player = room.players.find((p) => p.id === targetId);
+      if (!player) {
+        continue;
+      }
+      resultVotes.push({
+        player: {
+          id: player.id,
+          name: player.name,
+          avatar: player.avatar,
+        },
+        votes: count,
+      });
+    }
+
+    if (lastVotingResult.eliminatedPlayerId) {
+      const player = room.players.find((p) => p.id === lastVotingResult.eliminatedPlayerId);
+      if (player) {
+        eliminatedPlayer = {
+          id: player.id,
+          name: player.name,
+          avatar: player.avatar,
+        };
+        eliminatedWasImpostor = room.impostorIds.includes(player.id);
+      }
+    }
+
+    isTie = lastVotingResult.isTie;
+  }
+
+  const votingView: VotingView = {
+    state,
+    endsAt: room.state === "voting" ? room.votingEndsAt : null,
+    totalVoters,
+    votesSubmitted,
+    hasVoted,
+    canVote,
+    remainingVotings: room.remainingVotings,
+    totalVotings: room.totalVotings,
+    options,
+    gameOver: room.winner != null,
+    winner: room.winner,
+  };
+
+  if (state === "results") {
+    votingView.result = {
+      eliminatedPlayer,
+      eliminatedWasImpostor,
+      isTie,
+      skipVotes,
+      votes: resultVotes.sort((a, b) => b.votes - a.votes),
+    };
+  }
+
+  return votingView;
+}
+
+function finalizeVoting(room: Room) {
+  const activePlayerIds = getActivePlayerIds(room);
+  const votesPerPlayer: {
+    [playerId: string]: number;
+  } = {};
+  let skipVotes = 0;
+
+  for (const voterId of activePlayerIds) {
+    const target = room.votes[voterId];
+    if (!target || target === "skip") {
+      skipVotes += 1;
+      continue;
+    }
+    if (!votesPerPlayer[target]) {
+      votesPerPlayer[target] = 0;
+    }
+    votesPerPlayer[target] += 1;
+  }
+
+  let eliminatedPlayerId: string | null = null;
+  let isTie = false;
+
+  const entries = Object.entries(votesPerPlayer);
+  let maxVotes = 0;
+  for (const [, count] of entries) {
+    if (count > maxVotes) {
+      maxVotes = count;
+    }
+  }
+
+  if (maxVotes === 0 || entries.length === 0) {
+    isTie = true;
+  } else {
+    const top = entries.filter(([, count]) => count === maxVotes);
+    if (top.length > 1) {
+      isTie = true;
+    } else {
+      eliminatedPlayerId = top[0][0];
+    }
+  }
+
+  if (
+    eliminatedPlayerId &&
+    !room.eliminatedPlayerIds.includes(eliminatedPlayerId)
+  ) {
+    room.eliminatedPlayerIds.push(eliminatedPlayerId);
+  }
+
+  room.lastVotingResult = {
+    eliminatedPlayerId,
+    eliminatedWasImpostor:
+      eliminatedPlayerId != null &&
+      room.impostorIds.includes(eliminatedPlayerId),
+    isTie,
+    votesPerPlayer,
+    skipVotes,
+  };
+
+  if (room.remainingVotings > 0) {
+    room.remainingVotings -= 1;
+  }
+
+  const aliveImpostors = room.impostorIds.filter(
+    (id) => !room.eliminatedPlayerIds.includes(id),
+  );
+
+  if (aliveImpostors.length === 0) {
+    room.winner = "crewmates";
+  } else if (room.remainingVotings <= 0) {
+    room.winner = "impostors";
+  }
+
+  if (room.winner) {
+    room.state = "reveal";
+  } else {
+    room.state = "in_progress";
+  }
+  room.votingEndsAt = null;
+}
+
+function finalizeVotingIfNeeded(room: Room): boolean {
+  if (room.state !== "voting") {
+    return false;
+  }
+
+  const now = Date.now();
+  const activePlayerIds = getActivePlayerIds(room);
+  const votesSubmitted = Object.keys(room.votes).filter((id) =>
+    activePlayerIds.includes(id),
+  ).length;
+  const allVoted =
+    activePlayerIds.length > 0 && votesSubmitted >= activePlayerIds.length;
+  const expired =
+    room.votingEndsAt != null && room.votingEndsAt <= now;
+
+  if (!expired && !allVoted) {
+    return false;
+  }
+
+  finalizeVoting(room);
+  return true;
 }
 
 function toView(room: Room, playerId: string): RoomView {
@@ -118,6 +426,8 @@ function toView(room: Room, playerId: string): RoomView {
       impostors,
     };
   }
+
+  view.voting = buildVotingView(room, playerId);
 
   return view;
 }
@@ -300,6 +610,10 @@ export async function GET(
 
   try {
     const room = await getRoomOrError(params.code.toUpperCase());
+    const changed = finalizeVotingIfNeeded(room);
+    if (changed) {
+      await saveRoom(room);
+    }
     const view = toView(room, playerId);
     return Response.json(view);
   } catch (error) {
@@ -320,13 +634,22 @@ export async function POST(
     return new Response("JSON inválido.", { status: 400 });
   }
 
-  const { action, playerId, playerName, playerAvatar, numImpostors, targetPlayerId } = body as {
+  const {
+    action,
+    playerId,
+    playerName,
+    playerAvatar,
+    numImpostors,
+    targetPlayerId,
+    maxVotings,
+  } = body as {
     action?: Action;
     playerId?: string;
     playerName?: string;
     playerAvatar?: string;
     numImpostors?: number;
     targetPlayerId?: string;
+    maxVotings?: number;
   };
 
   if (!playerId || typeof playerId !== "string") {
@@ -339,6 +662,7 @@ export async function POST(
 
   try {
     const room = await getRoomOrError(code);
+    finalizeVotingIfNeeded(room);
 
     if (!action || action === "join") {
       const trimmedName = (playerName ?? "").trim();
@@ -375,6 +699,8 @@ export async function POST(
       const totalPlayers = room.players.length;
       const impostorsRequested =
         typeof numImpostors === "number" ? numImpostors : room.settings.numImpostors;
+      const maxVotingsRequested =
+        typeof maxVotings === "number" ? maxVotings : room.settings.maxVotings;
 
       if (totalPlayers < 3) {
         return new Response("São necessários pelo menos 3 jogadores.", {
@@ -389,15 +715,145 @@ export async function POST(
         );
       }
 
+      if (maxVotingsRequested < 1) {
+        return new Response("Quantidade de votações deve ser pelo menos 1.", {
+          status: 400,
+        });
+      }
+
       room.settings.numImpostors = impostorsRequested;
+      room.settings.maxVotings = maxVotingsRequested;
 
       const word = pickRandomWord();
       const playerIds = room.players.map((p) => p.id);
       const impostorIds = pickRandomImpostors(playerIds, impostorsRequested);
 
+      const totalVotings = maxVotingsRequested;
+
       room.secretWord = word;
       room.impostorIds = impostorIds;
       room.state = "in_progress";
+      room.eliminatedPlayerIds = [];
+      room.votes = {};
+      room.votingEndsAt = null;
+      room.totalVotings = totalVotings;
+      room.remainingVotings = totalVotings;
+      room.lastVotingResult = undefined;
+      room.winner = null;
+
+      await saveRoom(room);
+      const view = toView(room, playerId);
+      return Response.json(view);
+    }
+
+    if (action === "startVoting") {
+      if (room.hostId !== playerId) {
+        return new Response("Apenas o anfitrião pode iniciar a votação.", {
+          status: 403,
+        });
+      }
+
+      if (room.state !== "in_progress") {
+        return new Response("A votação só pode começar durante a rodada.", {
+          status: 400,
+        });
+      }
+
+      if (room.winner) {
+        return new Response("O jogo já foi encerrado.", { status: 400 });
+      }
+
+      if (room.remainingVotings <= 0) {
+        return new Response("Não há mais votações disponíveis.", {
+          status: 400,
+        });
+      }
+
+      const activePlayerIds = getActivePlayerIds(room);
+      if (activePlayerIds.length < 3) {
+        return new Response(
+          "São necessários pelo menos 3 jogadores ativos para votar.",
+          { status: 400 },
+        );
+      }
+
+      room.state = "voting";
+      room.votes = {};
+      room.lastVotingResult = undefined;
+
+      const duration =
+        typeof room.settings.votingDurationSeconds === "number" &&
+        room.settings.votingDurationSeconds > 0
+          ? room.settings.votingDurationSeconds
+          : 60;
+
+      room.votingEndsAt = Date.now() + duration * 1000;
+
+      await saveRoom(room);
+      const view = toView(room, playerId);
+      return Response.json(view);
+    }
+
+    if (action === "vote") {
+      if (room.state !== "voting") {
+        return new Response("A votação não está ativa no momento.", {
+          status: 400,
+        });
+      }
+
+      if (room.winner) {
+        return new Response("O jogo já foi encerrado.", { status: 400 });
+      }
+
+      const activePlayerIds = getActivePlayerIds(room);
+      if (!activePlayerIds.includes(playerId)) {
+        return new Response("Apenas jogadores ativos podem votar.", {
+          status: 403,
+        });
+      }
+
+      if (room.votes[playerId]) {
+        return new Response("Você já votou nesta rodada.", { status: 400 });
+      }
+
+      const now = Date.now();
+      if (room.votingEndsAt != null && now > room.votingEndsAt) {
+        finalizeVoting(room);
+        await saveRoom(room);
+        const view = toView(room, playerId);
+        return Response.json(view);
+      }
+
+      if (!targetPlayerId || typeof targetPlayerId !== "string") {
+        return new Response("Voto inválido.", { status: 400 });
+      }
+
+      const voteValue = targetPlayerId === "skip" ? "skip" : targetPlayerId;
+
+      if (voteValue !== "skip") {
+        if (voteValue === playerId) {
+          return new Response("Você não pode votar em si mesmo.", {
+            status: 400,
+          });
+        }
+
+        const targetIsActive = activePlayerIds.includes(voteValue);
+        if (!targetIsActive) {
+          return new Response(
+            "Você só pode votar em jogadores ativos na sala.",
+            { status: 400 },
+          );
+        }
+      }
+
+      room.votes[playerId] = voteValue;
+
+      const changed = finalizeVotingIfNeeded(room);
+      if (changed) {
+        await saveRoom(room);
+        const view = toView(room, playerId);
+        return Response.json(view);
+      }
 
       await saveRoom(room);
       const view = toView(room, playerId);
@@ -418,6 +874,7 @@ export async function POST(
       }
 
       room.state = "reveal";
+      room.votingEndsAt = null;
 
       await saveRoom(room);
       const view = toView(room, playerId);
@@ -440,6 +897,13 @@ export async function POST(
       room.state = "lobby";
       room.secretWord = null;
       room.impostorIds = [];
+       room.eliminatedPlayerIds = [];
+       room.votes = {};
+       room.votingEndsAt = null;
+       room.lastVotingResult = undefined;
+       room.winner = null;
+       room.totalVotings = room.settings.maxVotings;
+       room.remainingVotings = room.settings.maxVotings;
 
       await saveRoom(room);
       const view = toView(room, playerId);

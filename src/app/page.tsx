@@ -3,17 +3,45 @@
 import { useEffect, useMemo, useState } from "react";
 import styles from "./page.module.css";
 
-type RoomState = "lobby" | "in_progress" | "reveal";
+type RoomState = "lobby" | "in_progress" | "voting" | "reveal";
 
 type RoomSettings = {
   numImpostors: number;
   category: string;
+  maxVotings: number;
+  votingDurationSeconds: number;
 };
 
 type RoomViewPlayer = {
   id: string;
   name: string;
   avatar: string;
+};
+
+type VotingResultEntry = {
+  player: RoomViewPlayer;
+  votes: number;
+};
+
+type VotingView = {
+  state: "idle" | "in_progress" | "results";
+  endsAt: number | null;
+  totalVoters: number;
+  votesSubmitted: number;
+  hasVoted: boolean;
+  canVote: boolean;
+  remainingVotings: number;
+  totalVotings: number;
+  options?: RoomViewPlayer[];
+  result?: {
+    eliminatedPlayer: RoomViewPlayer | null;
+    eliminatedWasImpostor: boolean;
+    isTie: boolean;
+    skipVotes: number;
+    votes: VotingResultEntry[];
+  };
+  gameOver: boolean;
+  winner: "crewmates" | "impostors" | null;
 };
 
 type RoomView = {
@@ -32,6 +60,7 @@ type RoomView = {
     word: string;
     impostors: RoomViewPlayer[];
   };
+  voting?: VotingView;
 };
 
 const PLAYER_ID_KEY = "impostor-player-id";
@@ -121,11 +150,12 @@ async function fetchRoom(code: string, playerId: string): Promise<RoomView> {
 
 async function sendRoomAction(
   code: string,
-  action: "start" | "reveal" | "nextRound" | "kick",
+  action: "start" | "reveal" | "nextRound" | "kick" | "startVoting" | "vote",
   playerId: string,
   options?: {
     numImpostors?: number;
     targetPlayerId?: string;
+    maxVotings?: number;
   },
 ): Promise<RoomView> {
   const response = await fetch(`/api/rooms/${code}`, {
@@ -161,10 +191,20 @@ export default function Home() {
   const [isHost, setIsHost] = useState(false);
   const [roomCodeInput, setRoomCodeInput] = useState("");
   const [numImpostors, setNumImpostors] = useState(1);
+  const [maxVotings, setMaxVotings] = useState(2);
+  const [votingSecondsLeft, setVotingSecondsLeft] = useState<number | null>(
+    null,
+  );
+  const [showVotingResultDetails, setShowVotingResultDetails] = useState(false);
+  const [hideVotingOverlay, setHideVotingOverlay] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const hasRoom = Boolean(roomCode && roomView);
+  const voting = roomView?.voting;
+  const votingState = voting?.state;
+  const votingEndsAt = voting?.endsAt;
+  const votingHasResult = Boolean(voting?.result);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -234,6 +274,7 @@ export default function Home() {
         setRoomView(view);
         if (!isHost || view.state !== "lobby") {
           setNumImpostors(view.settings.numImpostors);
+          setMaxVotings(view.settings.maxVotings);
         }
       } catch (error) {
         const roomError = error as RoomError;
@@ -271,6 +312,58 @@ export default function Home() {
   }, [roomCode, playerId, isHost]);
 
   useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (votingState !== "in_progress" || !votingEndsAt) {
+      setVotingSecondsLeft(null);
+      return;
+    }
+
+    function updateCountdown() {
+      const now = Date.now();
+      const endsAt = votingEndsAt;
+      if (!endsAt) {
+        setVotingSecondsLeft(null);
+        return;
+      }
+      const msLeft = endsAt - now;
+      const seconds = Math.max(0, Math.ceil(msLeft / 1000));
+      setVotingSecondsLeft(seconds);
+    }
+
+    updateCountdown();
+
+    const intervalId = window.setInterval(updateCountdown, 1000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [votingState, votingEndsAt]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (votingState !== "results" || !votingHasResult) {
+      setShowVotingResultDetails(false);
+      return;
+    }
+
+    setShowVotingResultDetails(false);
+
+    const timeoutId = window.setTimeout(() => {
+      setShowVotingResultDetails(true);
+    }, 2000);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [votingState, votingHasResult]);
+
+  useEffect(() => {
     if (!roomCode || !playerId) {
       return;
     }
@@ -288,6 +381,7 @@ export default function Home() {
           setRoomView(view);
           if (!isHost || view.state !== "lobby") {
             setNumImpostors(view.settings.numImpostors);
+            setMaxVotings(view.settings.maxVotings);
           }
         }
       } catch (error) {
@@ -370,6 +464,7 @@ export default function Home() {
       setRoomView(result.view);
       setIsHost(true);
       setNumImpostors(result.view.settings.numImpostors);
+      setMaxVotings(result.view.settings.maxVotings);
 
       if (typeof window !== "undefined") {
         localStorage.setItem(ROOM_CODE_KEY, result.roomCode);
@@ -410,6 +505,7 @@ export default function Home() {
       setRoomView(view);
       setIsHost(false);
       setNumImpostors(view.settings.numImpostors);
+      setMaxVotings(view.settings.maxVotings);
 
       if (typeof window !== "undefined") {
         localStorage.setItem(ROOM_CODE_KEY, code);
@@ -439,6 +535,7 @@ export default function Home() {
         playerId,
         {
           numImpostors,
+          maxVotings,
         },
       );
       setRoomView(view);
@@ -451,9 +548,62 @@ export default function Home() {
     }
   }
 
+  async function handleStartVoting() {
+    if (!playerId || !roomCode) {
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const view = await sendRoomAction(roomCode, "startVoting", playerId);
+      setRoomView(view);
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : "Não foi possível iniciar a votação.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleVote(targetPlayerId: string | "skip") {
+    if (!playerId || !roomCode) {
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const view = await sendRoomAction(roomCode, "vote", playerId, {
+        targetPlayerId,
+      });
+      setRoomView(view);
+    } catch (e) {
+      setError(
+        e instanceof Error
+          ? e.message
+          : "Não foi possível registrar o seu voto.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleReveal() {
     if (!playerId || !roomCode) {
       return;
+    }
+
+    if (typeof window !== "undefined") {
+      const shouldFinish = window.confirm(
+        "Tem certeza que deseja finalizar a rodada e revelar o resultado?",
+      );
+      if (!shouldFinish) {
+        return;
+      }
     }
 
     setLoading(true);
@@ -590,9 +740,28 @@ export default function Home() {
       });
   }
 
+  const gameOverWinner = voting?.winner ?? null;
+  const isVotingInProgress = votingState === "in_progress";
+  const isVotingResults = votingState === "results";
+  const showVotingOverlay = Boolean(
+    voting && (isVotingInProgress || isVotingResults) && !hideVotingOverlay,
+  );
   const isInLobby = roomView?.state === "lobby";
+  const isInVoting = roomView?.state === "voting";
   const isInGame = roomView?.state === "in_progress";
   const isInReveal = roomView?.state === "reveal";
+  const isWinner =
+    gameOverWinner != null && roomView
+      ? gameOverWinner === "crewmates"
+        ? !roomView.you.isImpostor
+        : roomView.you.isImpostor
+      : false;
+
+  useEffect(() => {
+    if (!voting || isVotingInProgress) {
+      setHideVotingOverlay(false);
+    }
+  }, [voting, isVotingInProgress]);
 
   return (
     <div className={styles.page}>
@@ -672,6 +841,147 @@ export default function Home() {
 
           {hasRoom && roomView && (
             <>
+              {showVotingOverlay && voting && (
+                <div
+                  className={styles.votingOverlay}
+                  onClick={() => setHideVotingOverlay(true)}
+                >
+                  <div
+                    className={styles.votingModal}
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    {isVotingInProgress && (
+                      <>
+                        <div className={styles.votingModalHeader}>
+                          <h2 className={styles.votingModalTitle}>Hora de votar</h2>
+                          {typeof votingSecondsLeft === "number" && (
+                            <span className={styles.votingTimer}>
+                              {votingSecondsLeft}s
+                            </span>
+                          )}
+                        </div>
+                        <p className={styles.votingStatus}>
+                          Escolha quem você acha que é o impostor.
+                        </p>
+                        <p className={styles.votingStatus}>
+                          {voting.votesSubmitted} de {voting.totalVoters} jogadores já votaram
+                        </p>
+                        {voting.canVote ? (
+                          <div className={styles.votingOptions}>
+                            {voting.options?.map((player) => (
+                              <button
+                                key={player.id}
+                                type="button"
+                                className={styles.votingOptionButton}
+                                disabled={loading}
+                                onClick={() => handleVote(player.id)}
+                              >
+                                <div className={styles.playerInfo}>
+                                  <span className={styles.playerAvatar}>
+                                    {player.avatar || "😀"}
+                                  </span>
+                                  <span className={styles.votingOptionName}>
+                                    {player.name}
+                                  </span>
+                                </div>
+                              </button>
+                            ))}
+                            <button
+                              type="button"
+                              className={styles.votingOptionButton}
+                              disabled={loading}
+                              onClick={() => handleVote("skip")}
+                            >
+                              <span className={styles.votingOptionName}>
+                                Pular voto
+                              </span>
+                              <span className={styles.votingSkipLabel}>
+                                Não tenho certeza
+                              </span>
+                            </button>
+                          </div>
+                        ) : (
+                          <p className={styles.votingStatus}>
+                            {voting.hasVoted
+                              ? "Seu voto foi registrado. Aguarde os outros jogadores."
+                              : "Você não pode votar nesta rodada."}
+                          </p>
+                        )}
+                      </>
+                    )}
+
+                    {isVotingResults && voting.result && (
+                      <>
+                        <div className={styles.votingModalHeader}>
+                          <h2 className={styles.votingModalTitle}>Resultado da votação</h2>
+                        </div>
+
+                        {!showVotingResultDetails && (
+                          <p className={styles.votingStatus}>
+                            Revelando quem é o mais suspeito...
+                          </p>
+                        )}
+
+                        {showVotingResultDetails && (
+                          <>
+                            <p className={styles.votingEliminated}>
+                              {voting.result.isTie
+                                ? "Empate. Ninguém foi eliminado."
+                                : voting.result.eliminatedPlayer
+                                  ? `${voting.result.eliminatedPlayer.name} foi eliminado${voting.result.eliminatedWasImpostor ? " e era o impostor." : "."}`
+                                  : "Ninguém foi eliminado nesta rodada."}
+                            </p>
+
+                            <ul className={styles.votingResultsList}>
+                              {voting.result.votes.map((entry) => (
+                                <li
+                                  key={entry.player.id}
+                                  className={styles.votingResultItem}
+                                >
+                                  <div className={styles.playerInfo}>
+                                    <span className={styles.playerAvatar}>
+                                      {entry.player.avatar || "😀"}
+                                    </span>
+                                    <span className={styles.playerName}>
+                                      {entry.player.name}
+                                    </span>
+                                  </div>
+                                  <span className={styles.votingResultVotes}>
+                                    {entry.votes}
+                                  </span>
+                                </li>
+                              ))}
+                              <li className={styles.votingResultItem}>
+                                <span className={styles.playerName}>
+                                  Pular voto
+                                </span>
+                                <span className={styles.votingResultVotes}>
+                                  {voting.result.skipVotes}
+                                </span>
+                              </li>
+                            </ul>
+
+                            {voting.gameOver && voting.winner && (
+                              <p className={styles.votingGameOver}>
+                                {voting.winner === "crewmates"
+                                  ? "Vitória dos tripulantes! Todos os impostores foram eliminados."
+                                  : "Vitória dos impostores! Eles passaram despercebidos."}
+                              </p>
+                            )}
+                            <button
+                              type="button"
+                              className={styles.secondaryButton}
+                              onClick={() => setHideVotingOverlay(true)}
+                            >
+                              Fechar
+                            </button>
+                          </>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
               <div className={styles.roomHeader}>
                 <div>
                   <span className={styles.roomLabel}>Sala</span>
@@ -680,6 +990,7 @@ export default function Home() {
                 <div className={styles.chip}>
                   {roomView.state === "lobby" && "Aguardando jogadores"}
                   {roomView.state === "in_progress" && "Rodada em andamento"}
+                  {roomView.state === "voting" && "Votação em andamento"}
                   {roomView.state === "reveal" && "Fim da rodada"}
                 </div>
               </div>
@@ -730,6 +1041,20 @@ export default function Home() {
                   </div>
                 )}
               </div>
+
+              {gameOverWinner && (
+                <div
+                  className={`${styles.gameOverBanner} ${
+                    isWinner
+                      ? styles.gameOverBannerWinner
+                      : styles.gameOverBannerLoser
+                  }`}
+                >
+                  {gameOverWinner === "crewmates"
+                    ? "Os inocentes venceram! Todos os impostores foram eliminados."
+                    : "Os impostores venceram! Eles enganaram a todos."}
+                </div>
+              )}
 
               <div className={styles.playersBlock}>
                 <div className={styles.playersHeader}>
@@ -813,6 +1138,35 @@ export default function Home() {
                     </div>
                   </div>
 
+                  <div className={styles.field}>
+                    <label className={styles.label}>
+                      Quantidade de votações
+                    </label>
+                    <div className={styles.impostorSelector}>
+                      <button
+                        className={styles.smallButton}
+                        disabled={maxVotings <= 1 || !isInLobby}
+                        onClick={() => {
+                          setMaxVotings((prev) => (prev > 1 ? prev - 1 : prev));
+                        }}
+                      >
+                        -
+                      </button>
+                      <span className={styles.impostorValue}>
+                        {maxVotings}
+                      </span>
+                      <button
+                        className={styles.smallButton}
+                        disabled={!isInLobby}
+                        onClick={() => {
+                          setMaxVotings((prev) => prev + 1);
+                        }}
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+
                   <div className={styles.buttonsColumn}>
                     {isInLobby && (
                       <button
@@ -825,12 +1179,30 @@ export default function Home() {
                     )}
 
                     {isInGame && (
+                      <>
+                        <button
+                          className={styles.primaryButton}
+                          disabled={loading}
+                          onClick={handleStartVoting}
+                        >
+                          Iniciar votação
+                        </button>
+                        <button
+                          className={styles.primaryButton}
+                          disabled={loading}
+                          onClick={handleReveal}
+                        >
+                          Finalizar rodada
+                        </button>
+                      </>
+                    )}
+
+                    {isInVoting && (
                       <button
                         className={styles.primaryButton}
-                        disabled={loading}
-                        onClick={handleReveal}
+                        disabled
                       >
-                        Revelar impostores
+                        Votação em andamento
                       </button>
                     )}
 
