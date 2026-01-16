@@ -276,9 +276,25 @@ function toView(room: Room, playerId: string): RoomView {
 }
 
 async function saveRoom(room: Room) {
-  await redis.set(roomKey(room.code), JSON.stringify(room), {
-    ex: ROOM_TTL_SECONDS,
-  });
+  const key = roomKey(room.code);
+  const value = JSON.stringify(room);
+
+  try {
+    await redis.set(key, value, {
+      ex: ROOM_TTL_SECONDS,
+    });
+
+    const stored = await redis.get<string>(key);
+    if (!stored) {
+      throw new Error("Falha ao verificar sala no Redis após salvar.");
+    }
+  } catch (error) {
+    const message =
+      error instanceof Error && error.message
+        ? error.message
+        : "Erro inesperado ao salvar sala no Redis.";
+    throw new Error(`Falha ao salvar sala ${room.code} no Redis: ${message}`);
+  }
 }
 
 function parseJson(request: NextRequest) {
