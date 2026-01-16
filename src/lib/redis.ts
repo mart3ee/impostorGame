@@ -15,17 +15,48 @@ type RedisLike = {
 
 let redisClient: RedisLike;
 
-const hasRedisEnv =
-  typeof process !== "undefined" &&
-  !!process.env.UPSTASH_REDIS_REST_URL &&
-  !!process.env.UPSTASH_REDIS_REST_TOKEN;
+function cleanEnvValue(value: string | undefined) {
+  if (!value) {
+    return "";
+  }
+  const trimmed = value.trim();
+  const startsWithDoubleQuote = trimmed.startsWith('"');
+  const endsWithDoubleQuote = trimmed.endsWith('"');
+  const startsWithSingleQuote = trimmed.startsWith("'");
+  const endsWithSingleQuote = trimmed.endsWith("'");
+  const startsWithBacktick = trimmed.startsWith("`");
+  const endsWithBacktick = trimmed.endsWith("`");
+
+  if (
+    (startsWithDoubleQuote && endsWithDoubleQuote) ||
+    (startsWithSingleQuote && endsWithSingleQuote) ||
+    (startsWithBacktick && endsWithBacktick)
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+
+  return trimmed;
+}
+
+const rawRedisUrl =
+  typeof process !== "undefined" ? process.env.UPSTASH_REDIS_REST_URL : "";
+const rawRedisToken =
+  typeof process !== "undefined" ? process.env.UPSTASH_REDIS_REST_TOKEN : "";
+
+const redisUrl = cleanEnvValue(rawRedisUrl);
+const redisToken = cleanEnvValue(rawRedisToken);
+
+const hasRedisEnv = !!redisUrl && !!redisToken;
 
 const isProduction =
   typeof process !== "undefined" &&
   process.env.NODE_ENV === "production";
 
 if (hasRedisEnv) {
-  redisClient = Redis.fromEnv() as unknown as RedisLike;
+  redisClient = new Redis({
+    url: redisUrl,
+    token: redisToken,
+  }) as unknown as RedisLike;
 } else if (!isProduction) {
   const globalForRedisMemory = globalThis as unknown as {
     __impostorMemoryStore?: Map<
