@@ -20,9 +20,13 @@ const hasRedisEnv =
   !!process.env.UPSTASH_REDIS_REST_URL &&
   !!process.env.UPSTASH_REDIS_REST_TOKEN;
 
+const isProduction =
+  typeof process !== "undefined" &&
+  process.env.NODE_ENV === "production";
+
 if (hasRedisEnv) {
   redisClient = Redis.fromEnv() as unknown as RedisLike;
-} else {
+} else if (!isProduction) {
   const globalForRedisMemory = globalThis as unknown as {
     __impostorMemoryStore?: Map<
       string,
@@ -87,6 +91,10 @@ if (hasRedisEnv) {
       return 1;
     },
   };
+} else {
+  throw new Error(
+    "Redis não está configurado. Defina UPSTASH_REDIS_REST_URL e UPSTASH_REDIS_REST_TOKEN.",
+  );
 }
 
 export const redis = redisClient;
